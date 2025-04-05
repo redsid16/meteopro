@@ -55,7 +55,7 @@ function initMap() {
     const map = L.map('weather-map').setView([46.2044, 6.1432], 10);
     
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenWeatherMap</a> contributors'
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     }).addTo(map);
 
     L.circle([46.2044, 6.1432], {
@@ -114,20 +114,92 @@ async function fetchWeatherData(city) {
     try {
         showLoading(true);
         
-        // في تطبيق حقيقي، استخدم API مثل OpenWeatherMap
-        // const apiKey = 'ff25f6e242221186cc9d4f8803fb1437';
-        // const response = await fetch(`https://api.openweathermap.org/data/2.5/weather?q=${city}&units=metric&appid=${apiKey}&lang=fr`);
+        const apiKey = 'ff25f6e242221186cc9d4f8803fb1437';
+        const response = await fetch(`https://api.openweathermap.org/data/2.5/weather?q=${city}&units=metric&appid=${apiKey}&lang=fr`);
         
-        // لمثالنا، سنستخدم بيانات وهمية
-        const mockData = getMockWeatherData(city);
-        updateWeatherUI(mockData);
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.message || 'Ville non trouvée');
+        }
+        
+        const data = await response.json();
+        
+        // جلب بيانات التوقعات لمدة 5 أيام
+        const forecastResponse = await fetch(`https://api.openweathermap.org/data/2.5/forecast?q=${city}&units=metric&appid=${apiKey}&lang=fr`);
+        const forecastData = await forecastResponse.json();
+        
+        const weatherInfo = {
+            city: data.name,
+            country: data.sys.country,
+            temperature: Math.round(data.main.temp),
+            description: data.weather[0].description,
+            icon: getWeatherIcon(data.weather[0].id),
+            feelsLike: Math.round(data.main.feels_like),
+            humidity: data.main.humidity,
+            wind: Math.round(data.wind.speed * 3.6), // تحويل من m/s إلى km/h
+            pressure: data.main.pressure,
+            uv: 'N/A', // يحتاج API منفصل لبيانات UV
+            visibility: (data.visibility / 1000).toFixed(1) + ' km',
+            alert: data.weather[0].main === 'Extreme' ? 'Alerte météo: Conditions extrêmes' : null,
+            lat: data.coord.lat,
+            lon: data.coord.lon,
+            forecast: parseForecastData(forecastData)
+        };
+        
+        updateWeatherUI(weatherInfo);
         
     } catch (error) {
-        showError('Erreur lors de la récupération des données météo');
+        showError(error.message || 'Erreur lors de la récupération des données météo');
         console.error(error);
     } finally {
         showLoading(false);
     }
+}
+
+function parseForecastData(forecastData) {
+    const dailyForecast = {};
+    const days = ['Dimanche', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'];
+    
+    forecastData.list.forEach(item => {
+        const date = new Date(item.dt * 1000);
+        const dateKey = date.toLocaleDateString('fr-FR');
+        
+        if (!dailyForecast[dateKey]) {
+            dailyForecast[dateKey] = {
+                date: date,
+                temps: [],
+                descriptions: [],
+                icons: []
+            };
+        }
+        
+        dailyForecast[dateKey].temps.push(item.main.temp);
+        dailyForecast[dateKey].descriptions.push(item.weather[0].description);
+        dailyForecast[dateKey].icons.push(item.weather[0].id);
+    });
+    
+    return Object.values(dailyForecast).map(day => {
+        return {
+            date: day.date,
+            dayName: days[day.date.getDay()],
+            high: Math.round(Math.max(...day.temps)),
+            low: Math.round(Math.min(...day.temps)),
+            icon: getWeatherIcon(day.icons[0]),
+            description: day.descriptions[0]
+        };
+    });
+}
+
+function getWeatherIcon(weatherId) {
+    // رموز Font Awesome بناء على كود الطقس من OpenWeatherMap
+    if (weatherId >= 200 && weatherId < 300) return 'fa-bolt'; // عواصف رعدية
+    if (weatherId >= 300 && weatherId < 400) return 'fa-cloud-rain'; // رذاذ
+    if (weatherId >= 500 && weatherId < 600) return 'fa-cloud-showers-heavy'; // مطر
+    if (weatherId >= 600 && weatherId < 700) return 'fa-snowflake'; // ثلج
+    if (weatherId >= 700 && weatherId < 800) return 'fa-smog'; // ضباب
+    if (weatherId === 800) return 'fa-sun'; // صافي
+    if (weatherId > 800) return 'fa-cloud'; // غائم
+    return 'fa-cloud';
 }
 
 function showLoading(isLoading) {
@@ -153,7 +225,7 @@ function updateWeatherUI(data) {
     
     // تحديث الطقس الحالي
     document.querySelector('.temperature').textContent = `${data.temperature}°C`;
-    document.querySelector('.weather-description').textContent = data.description;
+    document.querySelector('.weather-description').textContent = capitalizeFirstLetter(data.description);
     document.querySelector('.weather-icon i').className = `fas ${data.icon}`;
     
     // تحديث التفاصيل
@@ -167,8 +239,47 @@ function updateWeatherUI(data) {
     // تحديث التنبيهات
     updateWeatherAlert(data.alert);
     
+    // تحديث التوقعات اليومية
+    updateDailyForecast(data.forecast);
+    
     // تحديث الخريطة
     updateMap(data.lat, data.lon, data.city, data.description);
+}
+
+function capitalizeFirstLetter(string) {
+    return string.charAt(0).toUpperCase() + string.slice(1);
+}
+
+function updateDailyForecast(forecast) {
+    const forecastContainer = document.querySelector('.daily-forecast');
+    forecastContainer.innerHTML = '';
+    
+    forecast.slice(0, 7).forEach((day, index) => {
+        const dayCard = document.createElement('div');
+        dayCard.className = 'day-card';
+        
+        const dayName = index === 0 ? 'Aujourd\'hui' : day.dayName;
+        const dateStr = day.date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+        
+        dayCard.innerHTML = `
+            <div class="day-header">
+                <div class="day-name">${dayName}</div>
+                <div class="day-date">${dateStr}</div>
+            </div>
+            <div class="day-weather">
+                <div class="day-icon"><i class="fas ${day.icon}"></i></div>
+                <div class="day-temps">
+                    <div class="day-high">${day.high}°C</div>
+                    <div class="day-low">${day.low}°C</div>
+                </div>
+            </div>
+            <div class="day-details">
+                <div>${capitalizeFirstLetter(day.description)}</div>
+            </div>
+        `;
+        
+        forecastContainer.appendChild(dayCard);
+    });
 }
 
 function updateWeatherAlert(alert) {
@@ -187,78 +298,35 @@ function updateWeatherAlert(alert) {
 }
 
 function updateMap(lat, lon, city, description) {
-    const map = L.map('weather-map').setView([lat, lon], 10);
+    // إعادة تهيئة الخريطة إذا كانت موجودة بالفعل
+    if (window.weatherMap) {
+        window.weatherMap.remove();
+    }
+    
+    window.weatherMap = L.map('weather-map').setView([lat, lon], 10);
     
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-    }).addTo(map);
+    }).addTo(window.weatherMap);
 
     L.circle([lat, lon], {
         color: 'blue',
         fillColor: '#30f',
         fillOpacity: 0.2,
         radius: 10000
-    }).addTo(map).bindPopup(`${city} - ${description}`);
+    }).addTo(window.weatherMap).bindPopup(`${city} - ${description}`);
 }
 
 function getCurrentDateTime() {
     const now = new Date();
-    const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
-    return now.toLocaleDateString('fr-FR', options);
-}
-
-// بيانات وهمية للطقس (ستستبدلها بAPI حقيقي)
-function getMockWeatherData(city) {
-    const weatherData = {
-        'Genève': {
-            city: 'Genève',
-            country: 'Suisse',
-            temperature: 18,
-            description: 'Ensoleillé',
-            icon: 'fa-sun',
-            feelsLike: 17,
-            humidity: 65,
-            wind: 10,
-            pressure: 1015,
-            uv: '4 (Modéré)',
-            visibility: '10 km',
-            alert: 'Alerte météo: Orages prévus dans la région ce soir à partir de 20h00.',
-            lat: 46.2044,
-            lon: 6.1432
-        },
-        'Paris': {
-            city: 'Paris',
-            country: 'France',
-            temperature: 15,
-            description: 'Nuageux',
-            icon: 'fa-cloud',
-            feelsLike: 14,
-            humidity: 70,
-            wind: 12,
-            pressure: 1012,
-            uv: '3 (Modéré)',
-            visibility: '8 km',
-            alert: null,
-            lat: 48.8566,
-            lon: 2.3522
-        },
-        'Londres': {
-            city: 'Londres',
-            country: 'Royaume-Uni',
-            temperature: 12,
-            description: 'Pluie légère',
-            icon: 'fa-cloud-rain',
-            feelsLike: 10,
-            humidity: 85,
-            wind: 15,
-            pressure: 1005,
-            uv: '2 (Faible)',
-            visibility: '5 km',
-            alert: 'Avertissement: Pluies continues prévues toute la journée',
-            lat: 51.5074,
-            lon: -0.1278
-        }
+    const options = { 
+        weekday: 'long', 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric', 
+        hour: '2-digit', 
+        minute: '2-digit',
+        timeZone: 'Europe/Paris'
     };
-    
-    return weatherData[city] || weatherData['Genève'];
+    return now.toLocaleDateString('fr-FR', options);
 }
